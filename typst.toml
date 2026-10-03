@@ -1,0 +1,9 @@
+[package]
+name = "jutils"
+version = "0.1.0"
+entrypoint = "src/lib.typ"
+authors = [ "Jeppe Klitgaard <hi@jeppe.science>" ]
+license = "MIT"
+description = "A set of utilities that are too small to warrant their own package."
+repository = "https://github.com/JeppeKlitgaard/jutils-typst"
+compiler = "0.15.1"

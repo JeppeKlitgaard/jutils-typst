@@ -1,0 +1,1 @@
+#import "recolor-svg.typ": recolor, recolor-image
