@@ -62,54 +62,34 @@
   variants.join("|")
 }
 
-/// Recolours an SVG by replacing every occurrence of one colour with another.
-///
-/// The colour is matched in presentation attributes (`fill="…"`) and in CSS
-/// declarations (`style="fill: …"` or `<style>` blocks) for the properties
-/// `fill`, `stroke`, `stop-color`, `flood-color`, `lighting-color` and
-/// `color`. Common spellings of `color-before` are recognised
-/// case-insensitively: `#000`, `#000000`, `#000000ff`, `rgb(0, 0, 0)`,
-/// `black`, and so on.
-///
-/// SVG renders unfilled shapes black. So when `color-before` is black, the
-/// root `<svg>` element also gets a `fill` attribute (unless it already has
-/// one), which recolours shapes with no explicit fill.
-///
-/// The result has the same type as the input (`str` or `bytes`):
-///
-/// ```typ
-/// #let icon = read("icon.svg")
-/// #image(bytes(recolor(icon, red)))
-/// #image(bytes(recolor(icon, blue, color-before: white)))
-/// ```
-///
-/// -> str | bytes
-#let recolor(
-  /// The SVG source, for example from `read("file.svg")`.
-  /// -> str | bytes
-  svg,
-  /// The colour to replace `color-before` with.
-  /// -> color
-  color-new,
-  /// The colour in the SVG to replace.
-  /// -> color
-  color-before: black,
-) = {
-  assert(
-    type(svg) in (str, bytes),
-    message: "recolor: `svg` must be a string or bytes, got " + str(type(svg)),
-  )
-  assert(
-    type(color-new) == color,
-    message: "recolor: `color-new` must be a color, got " + str(type(color-new)),
-  )
-  assert(
-    type(color-before) == color,
-    message: "recolor: `color-before` must be a color, got " + str(type(color-before)),
-  )
+// Values of colour properties that are not colours, and so are never
+// replaced when recolouring every colour. `url` is the start of a paint
+// reference such as `url(#gradient)`.
+#let _non-colors = (
+  "url",
+  "none",
+  "transparent",
+  "currentcolor",
+  "inherit",
+  "initial",
+  "unset",
+  "revert",
+  "context-fill",
+  "context-stroke",
+)
 
-  let input-type = type(svg)
-  let src = if input-type == bytes { str(svg) } else { svg }
+// Matches any colour value: hex, a colour function or a keyword. Keywords in
+// `_non-colors` are filtered out afterwards, as Typst regexes have no
+// lookahead.
+#let _any-color = (
+  "#[0-9a-f]{3,8}\\b"
+    + "|(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\\([^)]*\\)"
+    + "|[a-z][a-z-]*\\b"
+)
+
+// Replaces `color-before` with `color-new` in the SVG source string `svg`.
+// If `color-before` is `none`, every colour is replaced.
+#let _recolor(svg, color-new, color-before) = {
   let new-hex = rgb(color-new).to-hex()
 
   // `(prop + separator)(value)`. Each variant ends in `\b` or `)`, so e.g.
@@ -117,13 +97,17 @@
   let pattern = regex(
     "(?i)(\\b(?:"
       + _color-props.join("|")
-      + ")\\s*(?:=\\s*[\"']\\s*|:\\s*))(?:"
-      + _color-variants(color-before)
+      + ")\\s*(?:=\\s*[\"']\\s*|:\\s*))("
+      + if color-before == none { _any-color } else { _color-variants(color-before) }
       + ")",
   )
-  let out = src.replace(pattern, m => m.captures.at(0) + new-hex)
+  let out = svg.replace(pattern, m => {
+    let (prop, value) = m.captures
+    if lower(value) in _non-colors { m.text } else { prop + new-hex }
+  })
 
-  if rgb(color-before).to-hex() == black.to-hex() {
+  // Unfilled shapes render black, so they are recoloured through the root.
+  if color-before == none or rgb(color-before).to-hex() == black.to-hex() {
     let root = out.find(regex("<svg\\b[^>]*>"))
     if root != none and root.find(regex("\\sfill\\s*=")) == none {
       out = out.replace(
@@ -134,48 +118,96 @@
     }
   }
 
-  if input-type == bytes { bytes(out) } else { out }
+  out
 }
 
-/// Loads an SVG file, recolours it with @recolor and returns it as an
-/// `image`.
+/// Recolours an SVG, either entirely or by replacing one colour with another.
 ///
-/// The file must be given as a `path` rather than a string. A `path` is
-/// resolved relative to the file that creates it, whereas a string would be
-/// resolved relative to this package.
+/// Colours are found in presentation attributes (`fill="…"`) and in CSS
+/// declarations (`style="fill: …"` or `<style>` blocks) for the properties
+/// `fill`, `stroke`, `stop-color`, `flood-color`, `lighting-color` and
+/// `color`.
+///
+/// By default every colour is replaced with `color-new`. Values that are not
+/// colours, such as `none`, `currentColor` or `url(#gradient)`, are left
+/// alone. Given a `color-before`, only that colour is replaced. Common
+/// spellings of it are recognised case-insensitively: `#000`, `#000000`,
+/// `#000000ff`, `rgb(0, 0, 0)`, `black`, and so on.
+///
+/// SVG renders unfilled shapes black. So when every colour or black is
+/// replaced, the root `<svg>` element also gets a `fill` attribute (unless it
+/// already has one), which recolours shapes with no explicit fill.
+///
+/// A file must be given as a `path` rather than a string. A `path` is
+/// resolved relative to the file that creates it, whereas a string is taken
+/// to be the SVG source itself.
+///
+/// By default the result is an `image`. With `return-image: false`, the
+/// recoloured source is returned instead, with the same type as the input
+/// (`bytes` for a `path`). This lets calls be chained to replace several
+/// colours:
 ///
 /// ```typ
-/// #recolor-image(path("icon.svg"), red, width: 1em)
-/// #recolor-image(path("logo.svg"), blue, color-before: white, alt: "Logo")
+/// #recolor-svg(path("icon.svg"), red, width: 1em)
+/// #recolor-svg(path("logo.svg"), blue, color-before: white, alt: "Logo")
+///
+/// #let src = recolor-svg(path("logo.svg"), red, color-before: black, return-image: false)
+/// #recolor-svg(src, blue, color-before: white)
 /// ```
 ///
-/// -> content
-#let recolor-image(
-  /// The SVG file to load, for example `path("icon.svg")`.
-  /// -> path
+/// -> content | str | bytes
+#let recolor-svg(
+  /// The SVG file, for example `path("icon.svg")`, or its source as a
+  /// string or bytes, for example from `read("icon.svg")`.
+  /// -> path | str | bytes
   source,
   /// The colour to replace `color-before` with.
   /// -> color
   color-new,
-  /// The colour in the SVG to replace.
-  /// -> color
-  color-before: black,
+  /// The colour in the SVG to replace, or `none` to replace every colour.
+  /// -> color | none
+  color-before: none,
+  /// Whether to return an `image` rather than the recoloured source.
+  /// -> bool
+  return-image: true,
   /// Further named arguments for `image`, such as `width`, `height`, `fit`
-  /// or `alt`.
+  /// or `alt`. Only allowed when `return-image` is `true`.
   /// -> arguments
   ..args,
 ) = {
   assert(
-    type(source) == path,
-    message: "recolor-image: `source` must be a path, got "
-      + str(type(source))
-      + if type(source) == str { ". Hint: use path(" + repr(source) + ")" } else { "" },
+    type(source) in (path, str, bytes),
+    message: "recolor-svg: `source` must be a path, string or bytes, got " + str(type(source)),
+  )
+  assert(
+    type(color-new) == color,
+    message: "recolor-svg: `color-new` must be a color, got " + str(type(color-new)),
+  )
+  assert(
+    color-before == none or type(color-before) == color,
+    message: "recolor-svg: `color-before` must be a color or none, got " + str(type(color-before)),
+  )
+  assert(
+    type(return-image) == bool,
+    message: "recolor-svg: `return-image` must be a bool, got " + str(type(return-image)),
   )
   assert(
     args.pos().len() == 0,
-    message: "recolor-image: unexpected positional arguments " + repr(args.pos()),
+    message: "recolor-svg: unexpected positional arguments " + repr(args.pos()),
+  )
+  assert(
+    return-image or args.named().len() == 0,
+    message: "recolor-svg: image arguments " + repr(args.named()) + " require `return-image: true`",
   )
 
-  let data = recolor(read(source, encoding: none), color-new, color-before: color-before)
-  image(data, format: "svg", ..args.named())
+  let data = if type(source) == path { read(source, encoding: none) } else { source }
+  let out = _recolor(str(data), color-new, color-before)
+
+  if return-image {
+    image(bytes(out), format: "svg", ..args.named())
+  } else if type(data) == bytes {
+    bytes(out)
+  } else {
+    out
+  }
 }
